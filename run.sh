@@ -3,10 +3,13 @@
 SPEC_MTP='{"method": "mtp", "num_speculative_tokens": 3}' 
 SPEC_CONFIG=(-sc "$SPEC_MTP") 
 ASYNC_SCHED=(--async-scheduling --enable-prefix-caching --mamba-cache-mode align)
-QUANT="auto" 
+
+QUANT="fp8"
+QUANT_CONFIG=(--kv-cache-dtype "$QUANT" --kv-cache-dtype-skip-layers sliding_window)
+
 PERF_MODE="interactivity"
 BATCH_SIZE=8192
-CTX_SIZE=225000
+CTX_SIZE=262144
 MEM=0.96
 NUM_SEQS=2
 
@@ -28,7 +31,7 @@ docker run --rm --name vllm --runtime nvidia --gpus all \
   --gpu-memory-utilization $MEM \
   --max_num_seqs $NUM_SEQS \
   --api-server-count 1 \
-  --kv-cache-dtype $QUANT \
+  "${QUANT_CONFIG[@]}" \
   --reasoning-parser qwen3 --enable-auto-tool-choice --language-model-only --enable-chunked-prefill --enable-prompt-tokens-details \
   --override-generation-config '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}' \
   --default-chat-template-kwargs '{"preserve_thinking": true,"reasoning_effort": "low"}' \
