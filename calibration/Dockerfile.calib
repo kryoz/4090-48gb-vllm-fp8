@@ -1,0 +1,7 @@
+FROM vllm/vllm-openai-tuned:latest
+
+RUN pip install --no-cache-dir llmcompressor datasets flash-linear-attention[cuda]
+
+WORKDIR /workspace
+
+ENTRYPOINT ["python3"]
