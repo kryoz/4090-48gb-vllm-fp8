@@ -28,7 +28,7 @@
       -v /root/calibration:/workspace \
       llm-compressor-calib:latest \
       3-transplant_mtp.py
-  ```
+   ```
 
 8. Patch the configuration (no docker needed here):
    ```bash
