@@ -22,7 +22,7 @@
    ```
 
 7. Transplant the MTP layer:
-   `bash
+   ```bash
    docker run --rm --runtime nvidia --gpus all --ipc=host \
       -v /root/models:/models \
       -v /root/calibration:/workspace \
