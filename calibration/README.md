@@ -25,7 +25,7 @@
    ```bash
    docker run --rm --runtime nvidia --gpus all --ipc=host \
       -v /root/models:/models \
-      -v /root/calibration:/workspace \
+      -v ./:/workspace \
       llm-compressor-calib:latest \
       3-transplant_mtp.py
    ```
@@ -34,8 +34,8 @@
    ```bash
    python3 4-patch_config.py \
     --reference /root/models/Qwen3.8-27B-FP8/config.json \
-    --target /root/calibration/output/Qwen3.8-27B-FP8-KV-calibrated/config.json
+    --target ./output/Qwen3.8-27B-FP8-KV-calibrated/config.json
 
    python3 5-fix_quantization_ignore.py \
-     --config /root/calibration/output/Qwen3.8-27B-FP8-KV-calibrated/config.json
+     --config ./output/Qwen3.8-27B-FP8-KV-calibrated/config.json
    ```
