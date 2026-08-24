@@ -39,3 +39,8 @@
    python3 5-fix_quantization_ignore.py \
      --config ./output/Qwen3.8-27B-FP8-KV-calibrated/config.json
    ```
+9. For image and video processing original copy configs from FP8 model directory to new model dir:
+   ```bash
+   preprocessor_config.json
+   video_preprocessor_config.json
+   ```
