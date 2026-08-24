@@ -6,13 +6,20 @@ ASYNC_SCHED=(--async-scheduling --enable-prefix-caching --mamba-cache-mode align
 
 CTX_SIZE=auto
 QUANT="fp8_e4m3"
+
 QUANT_CONFIG=(--kv-cache-dtype "$QUANT" --max-model-len $CTX_SIZE)
-#--kv-cache-dtype-skip-layers sliding_window
+# include the option into QUANT_CONFIG if your model NOT calibrated for fp8 kv cache
+# --kv-cache-dtype-skip-layers sliding_window
+
 PERF_MODE="interactivity"
 BATCH_SIZE=8192
 
-MEM=0.96
+MEM=0.95
 NUM_SEQS=3
+
+SPEC_MTP='{"method": "mtp", "num_speculative_tokens": 3}' 
+SPEC_CONFIG=(-sc "$SPEC_MTP") 
+MISC_CONFIG=(--async-scheduling --enable-prefix-caching --mamba-cache-mode align --block-size 32)
 
 docker run --rm --name vllm --runtime nvidia --gpus all \
   --cpuset-cpus 1-3 \
@@ -33,14 +40,16 @@ docker run --rm --name vllm --runtime nvidia --gpus all \
   --max_num_seqs $NUM_SEQS \
   --api-server-count 1 \
   "${QUANT_CONFIG[@]}" \
-  --block-size 32 \
-  --reasoning-parser qwen3 --enable-auto-tool-choice --language-model-only --enable-chunked-prefill --enable-prompt-tokens-details \
-  --override-generation-config '{"temperature":0.8,"top_p":0.9,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}' \
-  --default-chat-template-kwargs '{"preserve_thinking": true,"reasoning_effort": "low"}' \
+  --reasoning-parser qwen3 --enable-auto-tool-choice \
+  --language-model-only \
+  --enable-chunked-prefill \
+  --enable-prompt-tokens-details \
+  --override-generation-config '{"temperature":0.8,"top_p":0.9,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.05}' \
+  --default-chat-template-kwargs '{"preserve_thinking": true,"reasoning_effort": "medium"}' \
   --trust-remote-code \
   --tool-call-parser qwen3_coder \
   --attention-backend flashinfer \
   --performance-mode $PERF_MODE \
   --max-num-batched-tokens $BATCH_SIZE \
-  "${ASYNC_SCHED[@]}" \
+  "${MISC_CONFIG[@]}" \
   "${SPEC_CONFIG[@]}"
