@@ -40,7 +40,7 @@
         {%- endif %}
     {%- endif %}
 {%- endfor %}
-{%- set _effort_raw = reasoning_effort if reasoning_effort is defined else 'low' %}
+{%- set _effort_raw = reasoning_effort if reasoning_effort is defined else 'medium' %}
 {%- if _effort_raw == 'high' or _effort_raw == 'xhigh' %}
     {%- set _reasoning_effort = 'xhigh' %}
 {%- elif _effort_raw == 'low' %}
