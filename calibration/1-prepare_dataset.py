@@ -1,26 +1,53 @@
 """
 Builds a calibration dataset for llm-compressor from agent traffic logs.
 
-Source: JSONL session files from omp.sh Agent (`~/.omp/agent/sessions/`),
-recursively across all subdirectories.
+Source: JSONL session files from the pi coding agent (`~/.pi/agent/sessions/`),
+recursively across all project directories. Subdirectories of a session folder
+contain SUBAGENT sessions (separate real conversations with their own context)
+— they are included. Files in a different format (e.g. `subagent-artifacts/
+*_transcript.jsonl`) are skipped: a file must start with a `session` header
+to be treated as a pi session.
 
-What the script does:
-1. Recursively collects all JSONL files from the OMP session directory
-2. Parses session events, extracting user/assistant/toolResult messages
-3. Dialogue boundaries are determined by the session_init event, NOT by each
-   user message — this is important: a single OMP session can be a long
-   multi-turn chain (including service continuation messages such as
-   "<system-notice>Continue.</system-notice>"), and in production the model
-   sees the ENTIRE accumulated history at once in a single forward pass,
-   rather than one message at a time. Splitting a session into chunks at each
-   user message would destroy exactly the long context that stratification
-   into buckets is intended to preserve.
-4. Deduplicates by hashing the ENTIRE dialogue content (not just the beginning —
-   otherwise different sessions with the same overall system prompt would
-   collapse into a single record)
-5. Sanitizes the data: removes potential secrets/PII
-6. Stratifies samples by context length — short / medium / long sessions
-7. Saves the result as JSONL with a "messages" field in chat template format
+pi session format (vs the old OMP format this script was adapted from):
+- The FIRST record is a `session` header (id/cwd/version). There is NO
+  `session_init` event — pi does NOT persist the system prompt in the
+  session file. The oh-my-pi extension DOES emit `session_init` with
+  `systemPrompt`; such an event still splits a file into separate samples,
+  but the systemPrompt is deliberately DROPPED so that all samples are
+  homogeneous (dialogue only, no system message).
+- Records form a TREE via `id`/`parentId` (branching/rewinding creates
+  multiple children for one parent). The context the model actually saw in
+  its last forward pass is the CHAIN from the leaf (last record in the file)
+  back to the root — not the raw file order. Branched files (~12% of the
+  corpus) would be corrupted if read linearly.
+- Extra message roles: `toolResult` (maps to "tool"), `developer`,
+  `fileMention`, `bashExecution` (all mapped to "user" — same as pi's own
+  convertToLlm in dist/core/messages.js).
+- `custom_message` entries participate in LLM context as user messages
+  (extension injections like wiki-recall context) — included.
+- `compaction` entries RESET the context: the model afterwards sees only
+  the compaction summary + messages from `firstKeptEntryId` onward. We
+  mirror this: a compaction starts a NEW sample with the summary as the
+  first user message, and pre-kept entries are skipped.
+- Pure metadata entries (model_change, thinking_level_change, custom,
+  label, title*, session_info, mode_change, ...) are ignored.
+
+Dialogue boundaries: a sample is one session file's leaf chain, further
+split only by `session_init` (omp) and `compaction` events. A single pi
+session is a long multi-turn chain and the model sees the ENTIRE
+accumulated history in one forward pass — do NOT split at each user
+message; that would destroy exactly the long context the stratification
+into buckets is meant to preserve.
+
+Known limitation: the (often large) system prompt is absent from ALL
+samples — plain pi sessions do not persist it, and it is dropped from omp
+sessions for homogeneity — so estimated lengths are biased downward
+relative to production. Dialogue content dominates for medium/long
+buckets.
+
+Pipeline: parse -> dedupe (hash of ENTIRE dialogue) -> sanitize secrets/PII
+-> stratify by context length (short/medium/long) -> save JSONL with a
+"messages" field in chat template format.
 """
 
 import json
@@ -31,7 +58,13 @@ from pathlib import Path
 from collections import defaultdict
 
 # --- 1. Data source ---------------------------------------------------
-RAW_LOG_DIR = Path.home() / ".omp" / "agent" / "sessions"
+RAW_LOG_DIR = Path.home() / ".pi" / "agent" / "sessions"
+
+# Same wrapping pi uses when it puts a compaction/branch summary back into context
+COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n"
+COMPACTION_SUMMARY_SUFFIX = "\n</summary>"
+BRANCH_SUMMARY_PREFIX = "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n"
+BRANCH_SUMMARY_SUFFIX = "\n</summary>"
 
 SECRET_PATTERNS = [
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),                 # sk-... style API keys
@@ -74,7 +107,7 @@ def _collect_jsonl_files(root: Path):
 
 def _extract_text_from_blocks(content, include_tool_calls: bool = True) -> str:
     """
-    Extract text from multi-part OMP message content.
+    Extract text from multi-part pi message content.
 
     include_tool_calls: if True, tool calls are serialized as short text
     markers instead of being discarded entirely — real agent traffic is
@@ -103,7 +136,7 @@ def _extract_text_from_blocks(content, include_tool_calls: bool = True) -> str:
                 parts.append(str(thinking_text)[:300])
             elif block_type == "toolCall" and include_tool_calls:
                 name = block.get("name", "unknown_tool")
-                args = str(block.get("arguments", block.get("input", "")))[:200]
+                args = str(block.get("arguments", ""))[:200]
                 parts.append(f"[tool_call: {name}({args})]")
             elif block_type == "tool_result":
                 tool_text = block.get("content", "")
@@ -112,65 +145,165 @@ def _extract_text_from_blocks(content, include_tool_calls: bool = True) -> str:
                         b.get("text", "") for b in tool_text if isinstance(b, dict)
                     )
                 parts.append(str(tool_text)[:500])
-        return " ".join(parts)
+        return " ".join(parts).strip()
     return str(content)
 
 
-def load_omp_sessions(root: Path):
+def _message_to_chat(msg: dict):
     """
-    Adapter for OMP JSONL sessions.
+    Convert one pi `message` record's message to a chat-template message
+    (or None if it carries no usable text). Role mapping mirrors pi's own
+    convertToLlm (dist/core/messages.js): bashExecution/custom/summaries ->
+    user, toolResult -> tool.
+    """
+    role = msg.get("role")
+    if role in ("user", "assistant"):
+        text = _extract_text_from_blocks(msg.get("content"))
+        return {"role": role, "content": text} if text.strip() else None
 
-    Yields a stream of INDIVIDUAL sessions (each as a list of messages), where
-    session boundaries are determined by the session_init event rather than
-    role-based heuristics.
+    if role == "toolResult":
+        text = _extract_text_from_blocks(msg.get("content"))
+        return {"role": "tool", "content": text} if text.strip() else None
 
-    A single file may contain multiple consecutive session_init events
-    (resume/restart) — each such block becomes a separate sample.
+    if role == "bashExecution":
+        parts = [f"Ran `{msg.get('command', '')}`"]
+        if msg.get("output"):
+            parts.append(f"```\n{msg['output']}\n```")
+        else:
+            parts.append("(no output)")
+        text = "\n".join(parts)
+        return {"role": "user", "content": text} if text else None
+
+    if role == "fileMention":
+        files = msg.get("files") or []
+        text = "\n\n".join(
+            f"{f.get('path', '')}\n{f.get('content', '')}"
+            for f in files if isinstance(f, dict)
+        )
+        return {"role": "user", "content": text} if text else None
+
+    if role == "developer":
+        # System-reminder-style injections delivered as their own turn
+        text = _extract_text_from_blocks(msg.get("content"))
+        return {"role": "user", "content": text} if text.strip() else None
+
+    return None
+
+
+def _leaf_chain(entries: list) -> list:
+    """
+    Reconstruct the branch the model actually saw: walk from the LAST record
+    (the current leaf) back to the root via parentId, then reverse.
+
+    Falls back to raw file order if the records lack parentId links (older
+    / foreign formats). The header (`type: session`) is excluded.
+    """
+    body = [e for e in entries if e.get("type") != "session"]
+    if not body:
+        return []
+    if not all("parentId" in e and "id" in e for e in body):
+        return body
+    by_id = {e["id"]: e for e in body}
+    chain = []
+    cur = body[-1]
+    seen = set()
+    while cur is not None and cur["id"] not in seen:
+        seen.add(cur["id"])
+        chain.append(cur)
+        cur = by_id.get(cur.get("parentId")) if cur.get("parentId") else None
+    chain.reverse()
+    return chain
+
+
+def load_pi_sessions(root: Path):
+    """
+    Adapter for pi JSONL sessions.
+
+    Yields a stream of INDIVIDUAL samples (each as a list of messages).
+    Boundaries: one file = one session (leaf chain), split further by
+    `session_init` (omp sessions, which persist the system prompt) and
+    `compaction` (context reset — the new sample starts with the summary).
     """
     for jsonl_file in _collect_jsonl_files(root):
+        entries = list(_load_jsonl_lines(jsonl_file))
+        if not entries or entries[0].get("type") != "session":
+            continue  # not a pi session file (e.g. subagent artifacts)
+
+        chain = _leaf_chain(entries)
+        if not chain:
+            continue
+
         current_system = None
         current_msgs = []
+        skip_until_id = None  # after compaction: skip entries before firstKeptEntryId
 
         def flush():
+            nonlocal current_msgs
             if not current_msgs:
                 return None
             msgs = []
             if current_system:
                 msgs.append({"role": "system", "content": current_system})
             msgs.extend(current_msgs)
+            current_msgs = []
             return msgs
 
-        for record in _load_jsonl_lines(jsonl_file):
+        for record in chain:
+            if skip_until_id:
+                if record.get("id") == skip_until_id:
+                    skip_until_id = None
+                else:
+                    continue
+
             rec_type = record.get("type")
 
             if rec_type == "session_init":
-                # A new session within the same file — close the previous one as a separate sample
+                # omp extension: a new session block inside the same file —
+                # close the previous one as a separate sample. The persisted
+                # systemPrompt is deliberately DROPPED: plain pi sessions do
+                # not persist their system prompt at all, so keeping it for
+                # omp sessions only would make the dataset inhomogeneous.
                 session = flush()
                 if session:
                     yield session
-                current_system = record.get("systemPrompt", "") or None
-                current_msgs = []
+                current_system = None
+                continue
+
+            if rec_type == "compaction":
+                session = flush()
+                if session:
+                    yield session
+                summary = record.get("summary", "") or ""
+                current_msgs = [{
+                    "role": "user",
+                    "content": COMPACTION_SUMMARY_PREFIX + summary + COMPACTION_SUMMARY_SUFFIX,
+                }]
+                skip_until_id = record.get("firstKeptEntryId")
+                continue
+
+            if rec_type == "branch_summary":
+                summary = record.get("summary", "") or ""
+                current_msgs.append({
+                    "role": "user",
+                    "content": BRANCH_SUMMARY_PREFIX + summary + BRANCH_SUMMARY_SUFFIX,
+                })
+                continue
+
+            if rec_type == "custom_message":
+                # Extension content injected into LLM context (rendered as a
+                # user message by pi's convertToLlm)
+                text = _extract_text_from_blocks(record.get("content"))
+                if text.strip():
+                    current_msgs.append({"role": "user", "content": text})
                 continue
 
             if rec_type == "message":
-                msg = record.get("message", {})
-                role = msg.get("role")
-                content = msg.get("content")
+                chat_msg = _message_to_chat(record.get("message", {}))
+                if chat_msg:
+                    current_msgs.append(chat_msg)
+                continue
+            # everything else (model_change, custom, label, title, ...) — skip
 
-                if role == "user":
-                    text = _extract_text_from_blocks(content)
-                    if text:
-                        current_msgs.append({"role": "user", "content": text})
-                elif role == "assistant":
-                    text = _extract_text_from_blocks(content)
-                    if text:
-                        current_msgs.append({"role": "assistant", "content": text})
-                elif role == "toolResult":
-                    text = _extract_text_from_blocks(content)
-                    if text:
-                        current_msgs.append({"role": "tool", "content": text})
-
-        # Last session in the file
         session = flush()
         if session:
             yield session
@@ -203,7 +336,7 @@ def build_dataset(
     # so that buckets are chosen based on real data rather than blindly
     all_token_estimates = []
 
-    for messages in load_omp_sessions(raw_path):
+    for messages in load_pi_sessions(raw_path):
         key = dedupe_key(messages)
         if key in seen_hashes:
             continue
