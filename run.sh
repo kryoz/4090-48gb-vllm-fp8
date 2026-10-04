@@ -25,7 +25,9 @@ docker run --rm --name vllm --runtime nvidia --gpus all \
   -v /root/.triton:/root/.triton \
   -v /root/models:/models \
   -p 8000:8000 --ipc=host \
-  -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512 \
+  -e PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
+  # 2026-10-04: expandable_segments убран: несовместим с KV-offloading connector
+  # (CUDA VMM ремапит страницы под pinned KV; см. vllm/config/vllm.py _verify_kv_transfer_compat)
   -e VLLM_USE_FASTOKENS=1 \
   -e SAFETENSORS_FAST_GPU=1 \
   -e TRANSFORMERS_OFFLINE=1 \
