@@ -22,10 +22,3 @@ If you use local vllm install copy `tuned_configs` files to `usr/local/lib/pytho
 cp tuned_configs/*.json /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/utils/configs
 ```
 
-## Improved chat template
-
-It's recommended to use [froggeric's tuned chat template](https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates) to avoid thinking loops and other bugs.
-
-I included [it](chat_template.jinja) with default reasoning set to `medium`. 
-
-To use it just copy it into your models directory to overwrite the default one.

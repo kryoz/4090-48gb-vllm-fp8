@@ -14,11 +14,11 @@ from llmcompressor import oneshot
 # bf16 source model, NOT /models/Qwen3.8-27B-FP8 — KV-cache calibration cannot be
 # "added on top" of an already quantized checkpoint; a complete recipe from scratch
 # is required.
-MODEL_ID = "/models/Qwen3.8-27B"
-DATASET_PATH = "/workspace/dataset/calibration_agentic_samples.jsonl"
+MODEL_ID = "/models/Qwen3.8-27B-pi-FP8"
+DATASET_PATH = "/workspace/dataset/*.parquet"
 OUTPUT_DIR = "/workspace/output/Qwen3.8-27B-FP8-KV-calibrated"
 
-NUM_CALIBRATION_SAMPLES = 800
+NUM_CALIBRATION_SAMPLES = 512
 MAX_SEQUENCE_LENGTH = 4096
 
 print(f"Loading {MODEL_ID} (sequential onloading — the entire checkpoint is not loaded into VRAM at once)")
@@ -71,7 +71,7 @@ for name, module in model.named_modules():
 print(f"Registered hooks on {len(mtp_hook_handles)} leaf MTP modules for verification")
 
 print(f"Loading dataset {DATASET_PATH}")
-ds = load_dataset("json", data_files=DATASET_PATH, split="train")
+ds = load_dataset("parquet", data_files=DATASET_PATH, split="train")
 
 def has_user_message(example):
     return any(m.get("role") == "user" for m in example["messages"])
