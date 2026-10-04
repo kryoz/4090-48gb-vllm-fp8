@@ -17,6 +17,9 @@ SPEC_CONFIG=(-sc "$SPEC_MTP")
 MISC_CONFIG=(--async-scheduling --enable-prefix-caching --enable-auto-tool-choice --enable-chunked-prefill --mamba-cache-mode align --block-size 32 --enable-flashinfer-autotune)
 # --attention-backend flashinfer --enable-flashinfer-autotune \
  
+# 2026-10-04: expandable_segments убран из PYTORCH_CUDA_ALLOC_CONF: несовместим
+# с KV-offloading connector (CUDA VMM ремапит страницы под pinned KV;
+# см. vllm/config/vllm.py::_verify_kv_transfer_compat)
 docker run --rm --name vllm --runtime nvidia --gpus all \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
@@ -26,8 +29,6 @@ docker run --rm --name vllm --runtime nvidia --gpus all \
   -v /root/models:/models \
   -p 8000:8000 --ipc=host \
   -e PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
-  # 2026-10-04: expandable_segments убран: несовместим с KV-offloading connector
-  # (CUDA VMM ремапит страницы под pinned KV; см. vllm/config/vllm.py _verify_kv_transfer_compat)
   -e VLLM_USE_FASTOKENS=1 \
   -e SAFETENSORS_FAST_GPU=1 \
   -e TRANSFORMERS_OFFLINE=1 \
