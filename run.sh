@@ -1,25 +1,17 @@
 #!/bin/bash
 
-CTX_SIZE=auto
-# 2026-10-04: KV cache в bf16 (lossless) вместо fp8_e4m3: пул VRAM ~215K токенов,
-# ёмкость компенсируется оффлоадом холодных префиксов в RAM (native backend).
-QUANT="bfloat16"
-QUANT_CONFIG=(--dtype bfloat16 --kv-cache-dtype $QUANT --max-model-len $CTX_SIZE)
-OFFLOAD_GIB=24
-OFFLOAD_CONFIG=(--kv-offloading-size $OFFLOAD_GIB --kv-offloading-backend native)
+QUANT="fp8"
+QUANT_CONFIG=(--dtype bfloat16 --kv-cache-dtype $QUANT --max-model-len auto)
+OFFLOAD_CONFIG=()
 
 PERF_MODE="balanced"
-MEM=0.95
 NUM_SEQS=6
 
 SPEC_MTP='{"method": "mtp", "num_speculative_tokens": 3}' 
 SPEC_CONFIG=(-sc "$SPEC_MTP") 
+
 MISC_CONFIG=(--async-scheduling --enable-prefix-caching --enable-auto-tool-choice --enable-chunked-prefill --mamba-cache-mode align --block-size 32 --enable-flashinfer-autotune)
-# --attention-backend flashinfer --enable-flashinfer-autotune \
  
-# 2026-10-04: expandable_segments убран из PYTORCH_CUDA_ALLOC_CONF: несовместим
-# с KV-offloading connector (CUDA VMM ремапит страницы под pinned KV;
-# см. vllm/config/vllm.py::_verify_kv_transfer_compat)
 docker run --rm --name vllm --runtime nvidia --gpus all \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
@@ -36,7 +28,6 @@ docker run --rm --name vllm --runtime nvidia --gpus all \
   vllm/vllm-openai-tuned:latest \
   /models/Swift-Qwen3.8-27B-FP8 \
   --served-model-name qwen3.8-27b \
-  --gpu-memory-utilization $MEM \
   --max_num_seqs $NUM_SEQS \
   "${QUANT_CONFIG[@]}" \
   --reasoning-parser qwen3  --tool-call-parser qwen3_coder \
