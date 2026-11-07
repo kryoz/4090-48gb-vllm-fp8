@@ -19,7 +19,6 @@ docker run --rm --name vllm --runtime nvidia --gpus all \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   vllm/vllm-openai-tuned:latest \
   /models/${MODEL} \
-  --api-key sk-zzuJCw3TXYWViMPfT7id_A \
   --served-model-name qwen3.8-27b \
   --max_num_seqs 2 \
   --dtype bfloat16 \
