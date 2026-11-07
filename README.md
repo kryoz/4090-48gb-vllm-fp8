@@ -15,10 +15,8 @@ Grab [Dockerfile](Dockerfile) and build modded image:
 ```bash
 docker build . -t vllm/vllm-openai-tuned
 ```
-then use it instead of official in your command or service like [run.sh](run.sh)
+then use it instead of official in your command or service like [run-mtp.sh](run-mtp.sh)
 
-If you use local vllm install copy `tuned_configs` files to `usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/utils/configs`
-```bash
-cp tuned_configs/*.json /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/quantization/utils/configs
-```
+There's also DFash2 version which requires additional drafter model (and memory too) [run-dflash.sh](run-dflash.sh)
+
 
